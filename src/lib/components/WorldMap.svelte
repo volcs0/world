@@ -41,6 +41,8 @@
   );
   // Circle radius ≈ 8–10px on screen at any zoom level
   let circleR = $derived(Math.max(12, vbWidth / 115));
+  // Label font size ≈ 18–20px on screen at any zoom level
+  let labelSize = $derived(Math.round(vbWidth / 68));
 
   function getFill(id: string): string {
     if (id === correctFlashId) return '#51cf66';
@@ -138,12 +140,12 @@
         y={info.cy}
         text-anchor="middle"
         dominant-baseline="middle"
-        font-size={info.lw ?? 70}
+        font-size={labelSize}
         font-weight="700"
         font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         fill={color}
         stroke="#0d1b2e"
-        stroke-width={info.lw ? info.lw * 0.3 : 20}
+        stroke-width={labelSize * 0.25}
         paint-order="stroke"
         pointer-events="none"
       >
