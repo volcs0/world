@@ -1,14 +1,18 @@
 <script lang="ts">
   import type { Geometry, LandsInfo } from '$lib/types.js';
+  import { formatName } from '$lib/quiz.js';
 
   interface Props {
     geometry: Geometry;
     landsInfo: LandsInfo;
     viewBox: string;
     regionIds: string[];
-    targetId?: string;
-    revealId?: string;
-    clickedId?: string;
+    /** Countries already correctly found — show their names permanently */
+    foundIds?: string[];
+    /** Country the user just clicked wrongly — flash its name briefly */
+    wrongFlashId?: string;
+    /** Country just answered correctly — highlight green briefly */
+    correctFlashId?: string;
     quizActive?: boolean;
     onLandClick?: (id: string) => void;
   }
@@ -18,50 +22,40 @@
     landsInfo,
     viewBox,
     regionIds,
-    targetId = '',
-    revealId = '',
-    clickedId = '',
+    foundIds = [],
+    wrongFlashId = '',
+    correctFlashId = '',
     quizActive = false,
     onLandClick = () => {}
   }: Props = $props();
 
-  // 14-colour map palette — chosen so adjacent lands look distinct
   const FILL_COLORS = [
-    '#6fa8c0', // 0 – slate blue
-    '#6aacdc', // 1 – blue
-    '#79bb8d', // 2 – green
-    '#c4a84f', // 3 – gold
-    '#a87abf', // 4 – purple
-    '#c8784c', // 5 – orange
-    '#52b3a0', // 6 – teal
-    '#c4b94a', // 7 – yellow
-    '#c07070', // 8 – rose
-    '#5890c0', // 9 – steel blue
-    '#87be70', // 10 – sage
-    '#c8a070', // 11 – sand
-    '#9880c0', // 12 – lavender
-    '#70be88'  // 13 – mint
+    '#6fa8c0', '#6aacdc', '#79bb8d', '#c4a84f', '#a87abf',
+    '#c8784c', '#52b3a0', '#c4b94a', '#c07070', '#5890c0',
+    '#87be70', '#c8a070', '#9880c0', '#70be88'
   ];
 
   function getFill(id: string): string {
-    if (id === targetId) return '#51cf66';          // correct target – green
-    if (id === revealId) return '#ffd43b';          // revealed answer – amber
-    if (id === clickedId && id !== targetId) return '#ff6b6b'; // wrong click – red
+    if (id === correctFlashId) return '#51cf66';
+    if (id === wrongFlashId)   return '#ff6b6b';
+    if (foundIds.includes(id)) return '#3d8a50';
     const n = landsInfo[id]?.fillColorNumber ?? 0;
     return FILL_COLORS[n % FILL_COLORS.length];
   }
 
   function getStroke(id: string): string {
-    if (id === targetId || id === revealId) return '#fff';
-    if (id === clickedId) return '#fff';
+    if (id === correctFlashId || id === wrongFlashId) return '#fff';
+    if (foundIds.includes(id)) return 'rgba(255,255,255,0.5)';
     return 'rgba(255,255,255,0.25)';
   }
 
-  function getOpacity(id: string): number {
-    if (!quizActive) return 1;
-    // Dim all lands slightly during quiz so the target stands out when revealed
-    return 0.9;
-  }
+  // Labels to render: found countries (permanent) + wrong flash (temporary)
+  type LabelEntry = { id: string; color: string };
+  let labels = $derived<LabelEntry[]>([
+    ...foundIds.map(id => ({ id, color: '#ffffff' })),
+    ...(wrongFlashId ? [{ id: wrongFlashId, color: '#ffcc66' }] : []),
+    ...(correctFlashId ? [{ id: correctFlashId, color: '#ffffff' }] : [])
+  ]);
 </script>
 
 <svg
@@ -70,26 +64,47 @@
   class="world-map"
   preserveAspectRatio="xMidYMid meet"
 >
+  <!-- Land shapes -->
   {#each regionIds as id (id)}
     {#if geometry[id]}
       {@const fill = getFill(id)}
       {@const stroke = getStroke(id)}
-      {@const opacity = getOpacity(id)}
-      {@const clickable = quizActive}
       {#each [...(geometry[id].land ?? []), ...(geometry[id].island ?? [])] as d, i (i)}
         <path
           {d}
           {fill}
           {stroke}
-          {opacity}
           stroke-width="1.5"
           vector-effect="non-scaling-stroke"
-          class:clickable
-          onclick={() => clickable && onLandClick(id)}
-          role={clickable ? 'button' : undefined}
-          aria-label={clickable ? id : undefined}
+          class:clickable={quizActive}
+          onclick={() => quizActive && onLandClick(id)}
+          role={quizActive ? 'button' : undefined}
+          aria-label={quizActive ? id : undefined}
         />
       {/each}
+    {/if}
+  {/each}
+
+  <!-- Country name labels -->
+  {#each labels as { id, color } (id + color)}
+    {@const info = landsInfo[id]}
+    {#if info?.cx !== undefined && info.cy !== undefined}
+      <text
+        x={info.cx}
+        y={info.cy}
+        text-anchor="middle"
+        dominant-baseline="middle"
+        font-size={info.lw ?? 70}
+        font-weight="700"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        fill={color}
+        stroke="#0d1b2e"
+        stroke-width={info.lw ? info.lw * 0.3 : 20}
+        paint-order="stroke"
+        pointer-events="none"
+      >
+        {formatName(id)}
+      </text>
     {/if}
   {/each}
 </svg>
@@ -103,7 +118,7 @@
   }
 
   path {
-    transition: fill 0.15s ease, opacity 0.15s ease;
+    transition: fill 0.12s ease;
   }
 
   .clickable {
@@ -111,6 +126,6 @@
   }
 
   .clickable:hover {
-    opacity: 0.75 !important;
+    opacity: 0.75;
   }
 </style>

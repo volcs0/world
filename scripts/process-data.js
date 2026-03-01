@@ -22,6 +22,26 @@ function readPlist(filename) {
   return JSON.parse(json);
 }
 
+// Compute centroid + bounding box from SVG path M commands
+function labelInfo(pathStrings) {
+  const xs = [], ys = [];
+  const re = /M(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g;
+  for (const p of pathStrings) {
+    let m;
+    while ((m = re.exec(p)) !== null) {
+      xs.push(parseFloat(m[1]));
+      ys.push(parseFloat(m[2]));
+    }
+  }
+  if (!xs.length) return null;
+  const cx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const cy = ys.reduce((a, b) => a + b, 0) / ys.length;
+  const w = Math.max(...xs) - Math.min(...xs);
+  const h = Math.max(...ys) - Math.min(...ys);
+  const lw = Math.max(55, Math.min(260, Math.min(w, h) * 0.22));
+  return { cx: Math.round(cx), cy: Math.round(cy), lw: Math.round(lw) };
+}
+
 // Extract min/max coords from SVG path strings (approximation via M commands)
 function pathBounds(pathStrings) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -147,9 +167,14 @@ const landsRaw = readPlist('lands-info.plist');
 const landsInfo = {};
 
 for (const [name, data] of Object.entries(landsRaw.data)) {
+  const geo = geometry[name];
+  const label = geo
+    ? labelInfo([...(geo.land ?? []), ...(geo.island ?? [])])
+    : null;
   landsInfo[name] = {
     fillColorNumber: data.fillColorNumber ?? 0,
-    countryCode: data.countryCode ?? ''
+    countryCode: data.countryCode ?? '',
+    ...(label ?? {})
   };
 }
 
