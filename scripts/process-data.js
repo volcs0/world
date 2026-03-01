@@ -174,6 +174,7 @@ for (const [name, data] of Object.entries(landsRaw.data)) {
   landsInfo[name] = {
     fillColorNumber: data.fillColorNumber ?? 0,
     countryCode: data.countryCode ?? '',
+    showCircle: data.showCircle === true,
     ...(label ?? {})
   };
 }

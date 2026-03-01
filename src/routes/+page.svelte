@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import WorldMap from '$lib/components/WorldMap.svelte';
   import { formatName, shuffle } from '$lib/quiz.js';
+  import { VERSION } from '$lib/version.js';
   import type { Geometry, LandsInfo, Structure, QuizMode } from '$lib/types.js';
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -20,27 +21,60 @@
 
   type UIPhase = 'idle' | 'asking' | 'flash-wrong' | 'flash-correct' | 'done';
 
-  let quizActive    = $state(false);
-  let uiPhase       = $state<UIPhase>('idle');
-  let quizQueue     = $state<string[]>([]);
-  let quizIndex     = $state(0);
-  let quizScore     = $state(0);
-  let foundIds      = $state<string[]>([]);   // correctly found → labels shown
-  let wrongFlashId  = $state('');             // briefly shows wrong country name
-  let correctFlashId = $state('');            // briefly shows green before advancing
+  let quizActive     = $state(false);
+  let uiPhase        = $state<UIPhase>('idle');
+  let quizQueue      = $state<string[]>([]);
+  let quizIndex      = $state(0);
+  let quizScore      = $state(0);
+  let foundIds       = $state<string[]>([]);
+  let wrongFlashId   = $state('');
+  let correctFlashId = $state('');
+
+  // Hint state
+  let wrongGuessCount = $state(0);   // wrong guesses for current question
+  let hintLevel       = $state(0);   // 0 = none, 1 = text, 2 = pulse ring
+  let hintText        = $state('');
+  let hintPulseId     = $state('');
 
   let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ── Speech ────────────────────────────────────────────────────────────────
 
   let speechEnabled = $state(true);
+  let voice: SpeechSynthesisVoice | null = null;
+
+  // Preferred voices in priority order — these sound natural vs the robotic default
+  const VOICE_PREFS = [
+    'Samantha',               // macOS – best option
+    'Karen',                  // macOS Australian
+    'Daniel',                 // macOS British
+    'Moira',                  // macOS Irish
+    'Tessa',                  // macOS South African
+    'Google US English',
+    'Google UK English Female',
+    'Microsoft Aria Online (Natural) - English (United States)',
+    'Microsoft Jenny Online (Natural) - English (United States)',
+    'Microsoft Zira Desktop - English (United States)',
+  ];
+
+  function pickVoice() {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return;
+    for (const name of VOICE_PREFS) {
+      const v = voices.find(v => v.name === name);
+      if (v) { voice = v; return; }
+    }
+    // Fall back to first English voice
+    voice = voices.find(v => v.lang.startsWith('en-')) ?? voices[0] ?? null;
+  }
 
   function speak(text: string) {
     if (!speechEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 0.92;
-    u.pitch = 1;
+    if (voice) u.voice = voice;
+    u.rate  = 0.88;
+    u.pitch = 1.0;
     window.speechSynthesis.speak(u);
   }
 
@@ -53,23 +87,29 @@
 
   const WORLD_VIEWBOX = '662 -31 10968 5520';
 
-  let currentViewBox = $derived(scopeDisplayBounds(currentScope));
+  let currentViewBox  = $derived(scopeDisplayBounds(currentScope));
   let currentRegionIds = $derived(getScopeIds(currentScope));
-  let currentTarget = $derived(
+  let currentTarget   = $derived(
     quizActive && quizIndex < quizQueue.length ? quizQueue[quizIndex] : ''
   );
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
   onMount(async () => {
+    // Voices load asynchronously in most browsers
+    if ('speechSynthesis' in window) {
+      pickVoice();
+      window.speechSynthesis.addEventListener('voiceschanged', pickVoice);
+    }
+
     [geometry, structure, landsInfo] = await Promise.all([
       fetch('/data/geometry.json').then(r => r.json()),
       fetch('/data/structure.json').then(r => r.json()),
       fetch('/data/lands.json').then(r => r.json())
     ]);
-    for (const [region, data] of Object.entries(structure.continentalRegions)) {
-      for (const id of data.landIdentifiers) landToContinent[id] = region;
-    }
+    for (const [region, data] of Object.entries(structure.continentalRegions))
+      for (const id of data.landIdentifiers)
+        landToContinent[id] = region;
     loaded = true;
   });
 
@@ -92,8 +132,7 @@
     }
     const ids =
       structure.continentalRegions[scope]?.landIdentifiers ??
-      structure.provincialRegions[scope]?.landIdentifiers ??
-      [];
+      structure.provincialRegions[scope]?.landIdentifiers ?? [];
     return ids.filter(id => geometry[id]);
   }
 
@@ -105,6 +144,24 @@
     );
     if (hasStates) modes.push({ mode: 'states', label: 'States / Provinces' });
     return modes;
+  }
+
+  /** Returns a directional hint for the target within the current scope */
+  function buildDirectionalHint(targetId: string, scope: string): string {
+    const info = landsInfo[targetId];
+    const boundsStr = structure.continentalRegions[scope]?.displayBounds
+                   ?? structure.provincialRegions[scope]?.displayBounds ?? '';
+    if (!info?.cx || !info?.cy || !boundsStr) return `It's somewhere on this map.`;
+
+    const [bx, by, bw, bh] = boundsStr.split(' ').map(Number);
+    const relX = (info.cx - bx) / bw;
+    const relY = (info.cy - by) / bh;
+
+    const ns = relY < 0.33 ? 'northern' : relY > 0.66 ? 'southern' : 'central';
+    const ew = relX < 0.25 ? 'far western' : relX < 0.45 ? 'western'
+             : relX > 0.75 ? 'far eastern' : relX > 0.55 ? 'eastern' : '';
+    const dir = [ns, ew].filter(Boolean).join(', ');
+    return `It's in the ${dir} part of ${formatName(scope)}.`;
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -121,10 +178,9 @@
 
   function goBack() {
     clearQuiz();
-    const parts = currentScope.split(':');
-    currentScope = parts.length > 1 && !CONTINENTAL_REGIONS.includes(currentScope)
-      ? (Object.keys(structure.continentalRegions).find(r => currentScope.startsWith(r)) ?? '')
-      : '';
+    currentScope = CONTINENTAL_REGIONS.includes(currentScope)
+      ? ''
+      : (Object.keys(structure.continentalRegions).find(r => currentScope.startsWith(r)) ?? '');
   }
 
   function startQuiz(mode: QuizMode = 'countries') {
@@ -140,18 +196,19 @@
     }
     if (!ids.length) return;
 
-    quizQueue    = shuffle(ids);
-    quizIndex    = 0;
-    quizScore    = 0;
-    foundIds     = [];
-    quizActive   = true;
-    uiPhase      = 'asking';
+    quizQueue  = shuffle(ids);
+    quizIndex  = 0;
+    quizScore  = 0;
+    foundIds   = [];
+    quizActive = true;
+    uiPhase    = 'asking';
+    resetHints();
     speak(`Where is ${formatName(quizQueue[0])}?`);
   }
 
   function clearQuiz() {
     if (feedbackTimer) { clearTimeout(feedbackTimer); feedbackTimer = null; }
-    window.speechSynthesis?.cancel();
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
     quizActive     = false;
     uiPhase        = 'idle';
     quizQueue      = [];
@@ -160,23 +217,27 @@
     foundIds       = [];
     wrongFlashId   = '';
     correctFlashId = '';
+    resetHints();
+  }
+
+  function resetHints() {
+    wrongGuessCount = 0;
+    hintLevel       = 0;
+    hintText        = '';
+    hintPulseId     = '';
   }
 
   function handleMapClick(id: string) {
     if (!quizActive || uiPhase !== 'asking') return;
-    if (id === currentTarget) {
-      handleCorrect();
-    } else {
-      handleWrong(id);
-    }
+    id === currentTarget ? handleCorrect() : handleWrong(id);
   }
 
   function handleCorrect() {
     quizScore++;
     uiPhase        = 'flash-correct';
     correctFlashId = currentTarget;
-    const name     = formatName(currentTarget);
-    speak(`That is correct! ${name}.`);
+    hintPulseId    = '';
+    speak(`That is correct! ${formatName(currentTarget)}.`);
 
     feedbackTimer = setTimeout(() => {
       foundIds       = [...foundIds, correctFlashId];
@@ -186,17 +247,27 @@
   }
 
   function handleWrong(clickedId: string) {
+    wrongGuessCount++;
     uiPhase      = 'flash-wrong';
     wrongFlashId = clickedId;
-    const clickedName = formatName(clickedId);
-    const targetName  = formatName(currentTarget);
-    speak(`That's not ${targetName}, that's ${clickedName}.`);
+    speak(`That's not ${formatName(currentTarget)}, that's ${formatName(clickedId)}.`);
 
     feedbackTimer = setTimeout(() => {
-      wrongFlashId = '';
-      uiPhase      = 'asking';
+      wrongFlashId  = '';
+      uiPhase       = 'asking';
       feedbackTimer = null;
     }, 1800);
+  }
+
+  function useHint() {
+    hintLevel++;
+    if (hintLevel === 1) {
+      hintText = buildDirectionalHint(currentTarget, currentScope);
+      speak(hintText);
+    } else if (hintLevel === 2) {
+      hintPulseId = currentTarget;
+      speak(`Look for the pulsing ring on the map.`);
+    }
   }
 
   function advanceQuestion() {
@@ -210,6 +281,7 @@
     } else {
       quizIndex = next;
       uiPhase   = 'asking';
+      resetHints();
       speak(`Where is ${formatName(quizQueue[next])}?`);
     }
   }
@@ -225,6 +297,7 @@
     speak(`Skipped. The answer was ${formatName(currentTarget)}.`);
     uiPhase        = 'flash-correct';
     correctFlashId = currentTarget;
+    hintPulseId    = '';
 
     feedbackTimer = setTimeout(() => {
       foundIds       = [...foundIds, correctFlashId];
@@ -234,9 +307,10 @@
   }
 
   function restartQuiz() {
-    if (!quizQueue.length) return;
-    const mode = structure.provincialRegions[currentScope] ? 'states' : 'countries';
-    startQuiz(mode as QuizMode);
+    const mode: QuizMode = Object.keys(structure.provincialRegions)
+      .some(k => k.startsWith(currentScope + ':'))
+      ? 'states' : 'countries';
+    startQuiz(mode);
   }
 </script>
 
@@ -266,9 +340,7 @@
       class="mute-btn"
       title={speechEnabled ? 'Mute speech' : 'Enable speech'}
       onclick={() => { speechEnabled = !speechEnabled; window.speechSynthesis?.cancel(); }}
-    >
-      {speechEnabled ? '🔊' : '🔇'}
-    </button>
+    >{speechEnabled ? '🔊' : '🔇'}</button>
   </header>
 
   <!-- ── Map ───────────────────────────────────────────────── -->
@@ -282,6 +354,7 @@
         {foundIds}
         {wrongFlashId}
         {correctFlashId}
+        {hintPulseId}
         quizActive={quizActive && uiPhase === 'asking'}
         onLandClick={currentScope ? handleMapClick : handleWorldClick}
       />
@@ -298,12 +371,10 @@
     <div class="bottom-panel start-panel">
       <div class="quiz-modes">
         {#each getQuizModes(currentScope) as { mode, label }}
-          <button class="start-btn" onclick={() => startQuiz(mode)}>
-            Quiz: {label}
-          </button>
+          <button class="start-btn" onclick={() => startQuiz(mode)}>Quiz: {label}</button>
         {/each}
       </div>
-      <p class="hint">or click any country on the map to explore</p>
+      <p class="hint-text">or click any country on the map to explore</p>
     </div>
   {/if}
 
@@ -314,8 +385,18 @@
         <span class="find-label">Find:</span>
         <span class="target-name">{formatName(currentTarget)}</span>
       </div>
+
+      {#if hintText}
+        <span class="hint-bubble">{hintText}</span>
+      {/if}
+
       <div class="quiz-actions">
         <span class="score-display">{quizScore} / {quizIndex} found</span>
+        {#if wrongGuessCount >= 2 && hintLevel < 2}
+          <button class="hint-btn" onclick={useHint}>
+            {hintLevel === 0 ? 'Hint' : 'More hint'}
+          </button>
+        {/if}
         <button class="skip-btn" onclick={skipQuestion}>Skip</button>
         <button class="stop-btn" onclick={clearQuiz}>Stop</button>
       </div>
@@ -366,6 +447,9 @@
       </div>
     </div>
   {/if}
+
+  <!-- ── Version ────────────────────────────────────────────── -->
+  <div class="version-tag">v{VERSION}</div>
 </div>
 
 <style>
@@ -376,13 +460,13 @@
     background: #0d1b2e; color: #e8eaf6;
   }
 
-  .app { display: flex; flex-direction: column; height: 100vh; width: 100vw; overflow: hidden; }
+  .app { display: flex; flex-direction: column; height: 100vh; width: 100vw; overflow: hidden; position: relative; }
 
   /* Header */
   header {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 14px;
-    background: rgba(10, 18, 36, 0.97);
+    background: rgba(10,18,36,0.97);
     border-bottom: 1px solid rgba(255,255,255,0.08);
     flex-shrink: 0; z-index: 10; flex-wrap: wrap;
   }
@@ -396,7 +480,6 @@
   }
   .back-btn:hover { background: rgba(255,255,255,0.18); }
 
-  /* Tabs */
   .region-tabs { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
   .tab {
     background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
@@ -406,11 +489,9 @@
   .tab:hover { background: rgba(126,200,227,0.2); color: #7ec8e3; }
   .tab.active { background: #7ec8e3; color: #0d1b2e; font-weight: 600; border-color: #7ec8e3; }
 
-  /* Mute button */
   .mute-btn {
     background: none; border: none; cursor: pointer; font-size: 1.1rem;
-    padding: 4px 6px; border-radius: 6px; transition: background 0.15s;
-    flex-shrink: 0;
+    padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: background 0.15s;
   }
   .mute-btn:hover { background: rgba(255,255,255,0.1); }
 
@@ -430,16 +511,24 @@
   /* Bottom panels */
   .bottom-panel {
     flex-shrink: 0; background: rgba(10,18,36,0.97); border-top: 1px solid rgba(255,255,255,0.08);
-    padding: 11px 18px; display: flex; align-items: center; gap: 14px; z-index: 10; flex-wrap: wrap;
+    padding: 11px 18px; display: flex; align-items: center; gap: 12px; z-index: 10; flex-wrap: wrap;
   }
   .start-panel { justify-content: center; flex-direction: column; gap: 6px; }
   .quiz-modes { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-  .hint { font-size: 0.76rem; color: rgba(232,234,246,0.4); }
+  .hint-text { font-size: 0.76rem; color: rgba(232,234,246,0.4); }
 
   /* Quiz asking */
   .question-area { display: flex; align-items: baseline; gap: 10px; flex: 1; }
   .find-label { font-size: 0.82rem; color: rgba(232,234,246,0.5); text-transform: uppercase; letter-spacing: 0.08em; }
   .target-name { font-size: 1.5rem; font-weight: 700; color: #7ec8e3; }
+
+  .hint-bubble {
+    font-size: 0.82rem; color: #ffd43b;
+    background: rgba(255,212,59,0.1); border: 1px solid rgba(255,212,59,0.25);
+    padding: 3px 10px; border-radius: 12px; flex-shrink: 0;
+    max-width: 260px;
+  }
+
   .quiz-actions { display: flex; align-items: center; gap: 8px; }
   .score-display { font-size: 0.87rem; color: rgba(232,234,246,0.55); white-space: nowrap; }
 
@@ -459,12 +548,21 @@
     transition: background 0.15s, transform 0.1s;
   }
   .start-btn:hover { background: #a8ddf0; transform: translateY(-1px); }
+
+  .hint-btn {
+    background: rgba(255,212,59,0.15); border: 1px solid rgba(255,212,59,0.4);
+    color: #ffd43b; padding: 4px 12px; border-radius: 14px;
+    cursor: pointer; font-size: 0.8rem; transition: background 0.15s;
+  }
+  .hint-btn:hover { background: rgba(255,212,59,0.25); }
+
   .skip-btn {
     background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.2);
     color: rgba(232,234,246,0.75); padding: 4px 12px; border-radius: 14px;
     cursor: pointer; font-size: 0.8rem; transition: background 0.15s;
   }
   .skip-btn:hover { background: rgba(255,255,255,0.16); }
+
   .stop-btn {
     background: transparent; border: 1px solid rgba(255,107,107,0.4);
     color: rgba(255,107,107,0.75); padding: 4px 12px; border-radius: 14px;
@@ -486,9 +584,21 @@
   .score-big { font-size: 3rem; font-weight: 800; line-height: 1; }
   .score-pct { font-size: 1.1rem; color: rgba(232,234,246,0.55); }
   .grade { font-size: 1rem; }
-  .perfect   { color: #51cf66; }
-  .great     { color: #7ec8e3; }
-  .good      { color: #ffd43b; }
+  .perfect    { color: #51cf66; }
+  .great      { color: #7ec8e3; }
+  .good       { color: #ffd43b; }
   .keep-going { color: rgba(232,234,246,0.55); }
   .result-buttons { display: flex; gap: 12px; justify-content: center; margin-top: 6px; }
+
+  /* Version tag */
+  .version-tag {
+    position: fixed;
+    bottom: 6px;
+    right: 10px;
+    font-size: 0.68rem;
+    color: rgba(232,234,246,0.2);
+    pointer-events: none;
+    z-index: 30;
+    letter-spacing: 0.04em;
+  }
 </style>

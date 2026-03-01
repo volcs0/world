@@ -9,6 +9,7 @@ export type Geometry = Record<string, ShapePaths>;
 export interface LandInfo {
   fillColorNumber: number;
   countryCode: string;
+  showCircle?: boolean;
   cx?: number;
   cy?: number;
   lw?: number;

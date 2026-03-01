@@ -7,12 +7,11 @@
     landsInfo: LandsInfo;
     viewBox: string;
     regionIds: string[];
-    /** Countries already correctly found — show their names permanently */
     foundIds?: string[];
-    /** Country the user just clicked wrongly — flash its name briefly */
     wrongFlashId?: string;
-    /** Country just answered correctly — highlight green briefly */
     correctFlashId?: string;
+    /** Pulsing hint ring shown at this country's centroid */
+    hintPulseId?: string;
     quizActive?: boolean;
     onLandClick?: (id: string) => void;
   }
@@ -25,6 +24,7 @@
     foundIds = [],
     wrongFlashId = '',
     correctFlashId = '',
+    hintPulseId = '',
     quizActive = false,
     onLandClick = () => {}
   }: Props = $props();
@@ -34,6 +34,13 @@
     '#c8784c', '#52b3a0', '#c4b94a', '#c07070', '#5890c0',
     '#87be70', '#c8a070', '#9880c0', '#70be88'
   ];
+
+  // Parse viewBox to get width for scaling circles
+  let vbWidth = $derived(
+    (() => { const p = viewBox.split(' ').map(Number); return p[2] ?? 10968; })()
+  );
+  // Circle radius ≈ 8–10px on screen at any zoom level
+  let circleR = $derived(Math.max(12, vbWidth / 115));
 
   function getFill(id: string): string {
     if (id === correctFlashId) return '#51cf66';
@@ -49,13 +56,17 @@
     return 'rgba(255,255,255,0.25)';
   }
 
-  // Labels to render: found countries (permanent) + wrong flash (temporary)
   type LabelEntry = { id: string; color: string };
   let labels = $derived<LabelEntry[]>([
     ...foundIds.map(id => ({ id, color: '#ffffff' })),
-    ...(wrongFlashId ? [{ id: wrongFlashId, color: '#ffcc66' }] : []),
+    ...(wrongFlashId  ? [{ id: wrongFlashId,   color: '#ffcc66' }] : []),
     ...(correctFlashId ? [{ id: correctFlashId, color: '#ffffff' }] : [])
   ]);
+
+  // Countries that need a dot because they're too small to click reliably
+  let circleIds = $derived(
+    regionIds.filter(id => landsInfo[id]?.showCircle && landsInfo[id]?.cx !== undefined)
+  );
 </script>
 
 <svg
@@ -71,21 +82,54 @@
       {@const stroke = getStroke(id)}
       {#each [...(geometry[id].land ?? []), ...(geometry[id].island ?? [])] as d, i (i)}
         <path
-          {d}
-          {fill}
-          {stroke}
+          {d} {fill} {stroke}
           stroke-width="1.5"
           vector-effect="non-scaling-stroke"
           class:clickable={quizActive}
           onclick={() => quizActive && onLandClick(id)}
           role={quizActive ? 'button' : undefined}
-          aria-label={quizActive ? id : undefined}
         />
       {/each}
     {/if}
   {/each}
 
-  <!-- Country name labels -->
+  <!-- Small-country click circles -->
+  {#each circleIds as id (id + '-circle')}
+    {@const info = landsInfo[id]}
+    {@const fill = getFill(id)}
+    <circle
+      cx={info.cx}
+      cy={info.cy}
+      r={circleR}
+      {fill}
+      stroke="rgba(255,255,255,0.6)"
+      stroke-width="1.5"
+      vector-effect="non-scaling-stroke"
+      class:clickable={quizActive}
+      onclick={() => quizActive && onLandClick(id)}
+      role={quizActive ? 'button' : undefined}
+    />
+  {/each}
+
+  <!-- Hint pulse ring -->
+  {#if hintPulseId}
+    {@const info = landsInfo[hintPulseId]}
+    {#if info?.cx !== undefined}
+      <circle
+        cx={info.cx}
+        cy={info.cy}
+        r={circleR * 5}
+        fill="none"
+        stroke="#ffd43b"
+        stroke-width="3"
+        vector-effect="non-scaling-stroke"
+        class="pulse-ring"
+        pointer-events="none"
+      />
+    {/if}
+  {/if}
+
+  <!-- Country name labels (found + flash) -->
   {#each labels as { id, color } (id + color)}
     {@const info = landsInfo[id]}
     {#if info?.cx !== undefined && info.cy !== undefined}
@@ -117,7 +161,7 @@
     background: #0d1b2e;
   }
 
-  path {
+  path, circle {
     transition: fill 0.12s ease;
   }
 
@@ -127,5 +171,14 @@
 
   .clickable:hover {
     opacity: 0.75;
+  }
+
+  .pulse-ring {
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.15; }
   }
 </style>
