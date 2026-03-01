@@ -21,8 +21,7 @@ jobs:
           tailscale ssh ${{ secrets.LAKEHOUSE_USER }}@${{ secrets.LAKEHOUSE_HOST }} << 'EOF'
             set -e
             if [ ! -d /srv/docker/world ]; then
-              sudo mkdir -p /srv/docker/world
-              sudo chown $USER:$USER /srv/docker/world
+              mkdir -p /srv/docker/world
               git clone https://github.com/${{ github.repository }}.git /srv/docker/world
             fi
             cd /srv/docker/world
